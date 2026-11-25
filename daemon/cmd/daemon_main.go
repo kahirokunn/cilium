@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
+// This file was not reviewed by a human before submission
+
 package cmd
 
 import (
@@ -943,10 +945,6 @@ func initEnv(logger *slog.Logger, vp *viper.Viper) {
 	}
 	if _, err := os.Stat(option.Config.BpfDir); os.IsNotExist(err) {
 		logging.Fatal(scopedLog, "BPF template directory: NOT OK. Please run 'make install-bpf'", logfields.Error, err)
-	}
-
-	if err := probes.CreateHeaderFiles(filepath.Join(option.Config.BpfDir, "include/bpf"), probes.ExecuteHeaderProbes(scopedLog)); err != nil {
-		logging.Fatal(scopedLog, "failed to create header files with feature macros", logfields.Error, err)
 	}
 
 	if err := pidfile.Write(defaults.PidFilePath); err != nil {
