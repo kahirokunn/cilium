@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
+// This file was not reviewed by a human before submission
+
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -351,15 +354,23 @@ func removeCNI() error {
 	os.Remove(cniConfigV3)
 	os.Remove(cniConfigV4)
 
-	err := os.Remove(cniConfigV5)
-	if err != nil && !os.IsNotExist(err) {
+	if err := removeIfExists(cniConfigV5); err != nil {
 		return err
 	}
 	if customCNIConf != "" {
-		err = os.Remove(customCNIConf)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
+		return removeIfExists(customCNIConf)
+	}
+	return nil
+}
+
+// removeIfExists removes path if it exists. On a read-only filesystem,
+// os.Remove() returns EROFS rather than ENOENT for a missing file.
+func removeIfExists(path string) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -408,20 +419,50 @@ func unmountCgroup() error {
 }
 
 func removeDirs() error {
-	dirs := []string{defaults.RuntimePath, defaults.LibraryPath}
-	for _, dir := range dirs {
-		// In the unlikely case one of the constants is the root directory, abort.
+	return removeRuntimeAndLibraryDirs(defaults.RuntimePath, defaults.LibraryPath)
+}
+
+// removeRuntimeAndLibraryDirs removes runtimeDir and then libDir.
+//
+// In the clean-cilium-state init container runtimeDir is a mount point and
+// cannot be removed. The kernel returns EBUSY, or EROFS if the parent directory
+// is on a read-only root filesystem, in which case os.RemoveAll() gives up
+// without touching the contents. Only empty runtimeDir in those cases, and keep
+// libDir as it may contain user-provided mounts.
+func removeRuntimeAndLibraryDirs(runtimeDir, libDir string) error {
+	// In the unlikely case one of the constants is the root directory, abort.
+	for _, dir := range []string{runtimeDir, libDir} {
 		if dir == "/" {
 			return fmt.Errorf("will not remove root directory %s", dir)
 		}
-		if err := os.RemoveAll(dir); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return err
-		}
 	}
-	return nil
+
+	err := os.RemoveAll(runtimeDir)
+	switch {
+	case err == nil:
+		return os.RemoveAll(libDir)
+	case errors.Is(err, unix.EBUSY), errors.Is(err, unix.EROFS):
+		return removeDirContents(runtimeDir)
+	default:
+		return err
+	}
+}
+
+// removeDirContents removes everything inside dir, but not dir itself. It
+// carries on after a failure and returns all errors.
+func removeDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	var errs []error
+	for _, entry := range entries {
+		errs = append(errs, os.RemoveAll(filepath.Join(dir, entry.Name())))
+	}
+	return errors.Join(errs...)
 }
 
 func removeAllMaps() error {
