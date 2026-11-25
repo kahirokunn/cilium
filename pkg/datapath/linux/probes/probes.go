@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
+// This file was not reviewed by a human before submission
+
 package probes
 
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net"
 	"os"
-	"path/filepath"
 	"sync"
-	"text/template"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/asm"
@@ -35,46 +34,8 @@ import (
 	"github.com/cilium/cilium/pkg/netns"
 )
 
-var tpl = template.New("headerfile")
-
-func init() {
-	const content = `
-/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
-/* Copyright Authors of Cilium */
-
-/* THIS FILE WAS GENERATED DURING AGENT STARTUP. */
-
-#pragma once
-
-{{- if not .Common}}
-#include "features.h"
-{{- end}}
-
-{{- range $key, $value := .Features}}
-{{- if $value}}
-#define {{$key}} 1
-{{end}}
-{{- end}}
-`
-	var err error
-	tpl, err = tpl.Parse(content)
-	if err != nil {
-		// slogloggercheck: it's safe to use the default logger here as it has been initialized by the program up to this point.
-		logging.Fatal(logging.DefaultSlogLogger, "could not parse headerfile template", logfields.Error, err)
-	}
-}
-
 // ErrNotSupported indicates that a feature is not supported by the current kernel.
 var ErrNotSupported = errors.New("not supported")
-
-type ProgramHelper struct {
-	Program ebpf.ProgramType
-	Helper  asm.BuiltinFunc
-}
-
-type FeatureProbes struct {
-	ProgramHelpers map[ProgramHelper]bool
-}
 
 // HaveProgramHelper is a wrapper around features.HaveProgramHelper() to
 // check if a certain BPF program/helper combination is supported by the kernel.
@@ -694,90 +655,6 @@ var HaveFibLookupSrc = sync.OnceValue(func() error {
 
 	return nil
 })
-
-// CreateHeaderFiles creates C header files with macros indicating which BPF
-// features are available in the kernel.
-func CreateHeaderFiles(headerDir string, probes *FeatureProbes) error {
-	common, err := os.Create(filepath.Join(headerDir, "features.h"))
-	if err != nil {
-		return fmt.Errorf("could not create common features header file: %w", err)
-	}
-	defer common.Close()
-	if err := writeCommonHeader(common, probes); err != nil {
-		return fmt.Errorf("could not write common features header file: %w", err)
-	}
-
-	skb, err := os.Create(filepath.Join(headerDir, "features_skb.h"))
-	if err != nil {
-		return fmt.Errorf("could not create skb related features header file: %w", err)
-	}
-	defer skb.Close()
-	if err := writeSkbHeader(skb, probes); err != nil {
-		return fmt.Errorf("could not write skb related features header file: %w", err)
-	}
-
-	xdp, err := os.Create(filepath.Join(headerDir, "features_xdp.h"))
-	if err != nil {
-		return fmt.Errorf("could not create xdp related features header file: %w", err)
-	}
-	defer xdp.Close()
-	if err := writeXdpHeader(xdp, probes); err != nil {
-		return fmt.Errorf("could not write xdp related features header file: %w", err)
-	}
-
-	return nil
-}
-
-// ExecuteHeaderProbes probes the kernel for a specific set of BPF features
-// which are currently used to generate various feature macros for the datapath.
-// The probe results returned in FeatureProbes are then used in the respective
-// function that writes the actual C macro definitions.
-// Further needed probes should be added here, while new macro strings need to
-// be added in the correct `write*Header()` function.
-func ExecuteHeaderProbes(logger *slog.Logger) *FeatureProbes {
-	probes := FeatureProbes{
-		ProgramHelpers: make(map[ProgramHelper]bool),
-	}
-
-	return &probes
-}
-
-// writeCommonHeader defines macross for bpf/include/bpf/features.h
-func writeCommonHeader(writer io.Writer, probes *FeatureProbes) error {
-	features := map[string]bool{}
-
-	return writeFeatureHeader(writer, features, true)
-}
-
-// writeSkbHeader defines macros for bpf/include/bpf/features_skb.h
-func writeSkbHeader(writer io.Writer, probes *FeatureProbes) error {
-	featuresSkb := map[string]bool{}
-
-	return writeFeatureHeader(writer, featuresSkb, false)
-}
-
-// writeXdpHeader defines macros for bpf/include/bpf/features_xdp.h
-func writeXdpHeader(writer io.Writer, probes *FeatureProbes) error {
-	featuresXdp := map[string]bool{}
-
-	return writeFeatureHeader(writer, featuresXdp, false)
-}
-
-func writeFeatureHeader(writer io.Writer, features map[string]bool, common bool) error {
-	input := struct {
-		Common   bool
-		Features map[string]bool
-	}{
-		Common:   common,
-		Features: features,
-	}
-
-	if err := tpl.Execute(writer, input); err != nil {
-		return fmt.Errorf("could not write template: %w", err)
-	}
-
-	return nil
-}
 
 // HaveBatchAPI checks if kernel supports batched bpf map lookup API.
 func HaveBatchAPI() error {

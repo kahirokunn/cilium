@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
 /* Copyright Authors of Cilium */
+/* This file was not reviewed by a human before submission */
 
 #pragma once
 
 #include <linux/bpf.h>
 
 #include "compiler.h"
-#include "features_xdp.h"
 #include "helpers.h"
 
 /* Only used helpers in Cilium go below. */

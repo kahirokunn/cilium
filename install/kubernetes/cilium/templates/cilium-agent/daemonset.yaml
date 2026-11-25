@@ -1,3 +1,4 @@
+{{- /* This file was not reviewed by a human before submission */ -}}
 {{- if and .Values.agent (not .Values.preflight.enabled) }}
 
 {{- /*  Default values with backwards compatibility */ -}}
@@ -11,6 +12,7 @@
 {{- $kubeProxyReplacement := (coalesce .Values.kubeProxyReplacement "false") -}}
 {{- $envoyDS := eq (include "envoyDaemonSetEnabled" .) "true" -}}
 {{- $buildDaemonConfig := or (kindIs "invalid" .Values.daemon.configSources) (not (regexMatch "^config-map:[^,]+$" .Values.daemon.configSources)) -}}
+{{- $readOnlyRootFilesystem := .Values.securityContext.readOnlyRootFilesystem -}}
 
 ---
 apiVersion: apps/v1
@@ -293,6 +295,9 @@ spec:
           protocol: TCP
         {{- end }}
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           {{- if .Values.securityContext.privileged }}
           privileged: true
           {{- else }}
@@ -407,10 +412,11 @@ spec:
           mountPath: /var/lib/cilium/tls/hubble
           readOnly: true
         {{- end }}
-        {{- if $buildDaemonConfig }}
+        {{- if or $buildDaemonConfig $readOnlyRootFilesystem }}
         - name: tmp
           mountPath: /tmp
-        {{- else }}
+        {{- end }}
+        {{- if not $buildDaemonConfig }}
         - name: cilium-config-path
           mountPath: /tmp/cilium/config-map
           readOnly: true
@@ -469,6 +475,10 @@ spec:
           {{ " " }}--type={{ $type }}
         {{- end }}
         terminationMessagePolicy: FallbackToLogsOnError
+        {{- if $readOnlyRootFilesystem }}
+        securityContext:
+          readOnlyRootFilesystem: true
+        {{- end }}
         volumeMounts:
         - name: cilium-run
           mountPath: /var/run/cilium
@@ -552,6 +562,9 @@ spec:
         {{- end }}
         terminationMessagePolicy: FallbackToLogsOnError
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           {{- if .Values.securityContext.privileged }}
           privileged: true
           {{- else }}
@@ -599,6 +612,9 @@ spec:
           mountPath: /hostbin
         terminationMessagePolicy: FallbackToLogsOnError
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           {{- if .Values.securityContext.privileged }}
           privileged: true
           {{- else }}
@@ -645,6 +661,9 @@ spec:
           mountPath: /hostbin
         terminationMessagePolicy: FallbackToLogsOnError
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           {{- if .Values.securityContext.privileged }}
           privileged: true
           {{- else }}
@@ -680,6 +699,9 @@ spec:
         - --
         terminationMessagePolicy: FallbackToLogsOnError
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           privileged: true
         volumeMounts:
         - name: bpf-maps
@@ -703,6 +725,10 @@ spec:
             sleep 1;
           done
         terminationMessagePolicy: FallbackToLogsOnError
+        {{- if $readOnlyRootFilesystem }}
+        securityContext:
+          readOnlyRootFilesystem: true
+        {{- end }}
         volumeMounts:
         - name: cilium-bootstrap-file-dir
           mountPath: "/tmp/cilium-bootstrap.d"
@@ -751,6 +777,9 @@ spec:
         {{- end }}
         terminationMessagePolicy: FallbackToLogsOnError
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           {{- if .Values.securityContext.privileged }}
           privileged: true
           {{- else }}
@@ -791,6 +820,9 @@ spec:
           {{- toYaml . | trim | nindent 10 }}
         {{- end }}
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           privileged: true
         command:
           - bash
@@ -832,6 +864,9 @@ spec:
           {{- toYaml . | trim | nindent 10 }}
         {{- end }}
         securityContext:
+          {{- if $readOnlyRootFilesystem }}
+          readOnlyRootFilesystem: true
+          {{- end }}
           {{- if .Values.securityContext.privileged }}
           privileged: true
           {{- else }}
@@ -876,7 +911,8 @@ spec:
         {{- toYaml . | trim | nindent 8 }}
       {{- end }}
       volumes:
-      {{- if $buildDaemonConfig }}
+      {{- if or $buildDaemonConfig $readOnlyRootFilesystem }}
+      {{- /* Also provides a writable /tmp with a read-only root filesystem. */}}
       # For sharing configuration between the "config" initContainer and the agent
       - name: tmp
         {{- if .Values.tmpVolume }}
@@ -884,7 +920,8 @@ spec:
         {{- else }}
         emptyDir: {}
         {{- end }}
-      {{- else }}
+      {{- end }}
+      {{- if not $buildDaemonConfig }}
       # To read the configuration from the config map
       - name: cilium-config-path
         configMap:

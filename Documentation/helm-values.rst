@@ -4028,6 +4028,10 @@
      - Run the pod with elevated privileges
      - bool
      - ``false``
+   * - :spelling:ignore:`securityContext.readOnlyRootFilesystem`
+     - Mount the root filesystem read-only in the containers and built-in init containers of the ``cilium-agent`` DaemonSet. This does not apply to ``extraContainers`` and ``extraInitContainers``. Other settings which make Cilium write files, such as Envoy log files, must use paths on a volume. Requires an agent image from Cilium v1.21 or later.
+     - bool
+     - ``false``
    * - :spelling:ignore:`securityContext.seLinuxOptions`
      - SELinux options for the ``cilium-agent`` and init containers
      - object
