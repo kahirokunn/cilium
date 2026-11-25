@@ -1,3 +1,5 @@
+.. This file was not reviewed by a human before submission
+
 .. _next_release_required_changes:
 
 |NEXT_RELEASE| Upgrade Notes
@@ -84,6 +86,14 @@ New Options
 
 The following options have been introduced in this version of Cilium:
 
+* The ``securityContext.readOnlyRootFilesystem`` Helm value mounts the root
+  filesystem read-only in the containers and built-in init containers of the
+  ``cilium-agent`` DaemonSet. It defaults to ``false``. It requires an agent
+  image from this version of Cilium or later. If other settings make Cilium
+  write files, such as Envoy log files, make sure that their paths are on a
+  volume. Commands run in the agent container can only write to mounted
+  volumes. For example, use ``--output-directory=/tmp`` with
+  ``cilium-dbg debuginfo -f``.
 * Packet monitoring, including monitor aggregation, can now be configured with
   the following Helm values: ``monitor.sidecar``, ``monitor.aggregation``,
   ``monitor.aggregationInterval``, ``monitor.aggregationFlags``, and

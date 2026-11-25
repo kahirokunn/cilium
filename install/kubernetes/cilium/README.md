@@ -1057,6 +1057,7 @@ contributors across the globe, there is almost always someone available to help.
 | securityContext.capabilities.cleanCiliumState | list | `["NET_ADMIN","SYS_MODULE","SYS_ADMIN","SYS_RESOURCE"]` | Capabilities for the `clean-cilium-state` init container |
 | securityContext.capabilities.mountCgroup | list | `["SYS_ADMIN","SYS_CHROOT","SYS_PTRACE"]` | Capabilities for the `mount-cgroup` init container |
 | securityContext.privileged | bool | `false` | Run the pod with elevated privileges |
+| securityContext.readOnlyRootFilesystem | bool | `false` | Mount the root filesystem read-only in the containers and built-in init containers of the `cilium-agent` DaemonSet. This does not apply to `extraContainers` and `extraInitContainers`. Other settings which make Cilium write files, such as Envoy log files, must use paths on a volume. Requires an agent image from Cilium v1.21 or later. |
 | securityContext.seLinuxOptions | object | `{"level":"s0","type":"spc_t"}` | SELinux options for the `cilium-agent` and init containers |
 | serviceAccounts | object | Component's fully qualified name. | Define serviceAccount names for components. |
 | serviceAccounts.clustermeshcertgen | object | `{"annotations":{},"automount":true,"create":true,"name":"clustermesh-apiserver-generate-certs"}` | Clustermeshcertgen is used if clustermesh.apiserver.tls.auto.method=cronJob |
