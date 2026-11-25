@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
+// This file was not reviewed by a human before submission
+
 package iptables
 
 import (
@@ -8,6 +10,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,6 +23,167 @@ import (
 	"github.com/cilium/cilium/pkg/loadbalancer"
 	wgTypes "github.com/cilium/cilium/pkg/wireguard/types"
 )
+
+func TestInitArgsSelectsBackendBinary(t *testing.T) {
+	const wrapper = "iptables-wrapper"
+
+	for _, tt := range []struct {
+		name    string
+		program string
+		mode    string
+		// programTarget and backendTarget are the symlink targets of the
+		// program and of its backend specific variant. An empty programTarget
+		// makes the program a regular file, and an empty backendTarget omits
+		// the backend specific variant.
+		programTarget string
+		backendTarget string
+		wantBackend   bool
+	}{
+		{
+			name:          "nft wrapper",
+			program:       "iptables",
+			mode:          "nft",
+			programTarget: wrapper,
+			backendTarget: "xtables-nft-multi",
+			wantBackend:   true,
+		},
+		{
+			name:          "legacy wrapper",
+			program:       "ip6tables",
+			mode:          "legacy",
+			programTarget: wrapper,
+			backendTarget: "xtables-legacy-multi",
+			wantBackend:   true,
+		},
+		{
+			name:          "program already points to the backend",
+			program:       "iptables",
+			mode:          "nft",
+			programTarget: "xtables-nft-multi",
+			backendTarget: "xtables-nft-multi",
+			wantBackend:   true,
+		},
+		{
+			name:          "custom executable",
+			program:       "iptables",
+			mode:          "nft",
+			backendTarget: "xtables-nft-multi",
+		},
+		{
+			name:          "missing backend",
+			program:       "ip6tables",
+			mode:          "nft",
+			programTarget: wrapper,
+		},
+		{
+			name:          "backend points to the wrapper",
+			program:       "ip6tables",
+			mode:          "nft",
+			programTarget: wrapper,
+			backendTarget: wrapper,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("PATH", dir)
+
+			version := "v1.8.11 (legacy)"
+			if tt.mode == "nft" {
+				version = "v1.8.11 (nf_tables)"
+			}
+			// Print the path used for every call other than --version.
+			script := fmt.Sprintf("if [ \"$1\" = --version ]; then echo '%s'; else echo \"$0 $*\"; fi", version)
+
+			program := filepath.Join(dir, tt.program)
+			if tt.programTarget == "" {
+				writeScript(t, program, script)
+			} else {
+				writeScript(t, filepath.Join(dir, tt.programTarget), script)
+				require.NoError(t, os.Symlink(filepath.Join(dir, tt.programTarget), program))
+			}
+			backend := program + "-" + tt.mode
+			if tt.backendTarget != "" {
+				writeScript(t, filepath.Join(dir, tt.backendTarget), script)
+				require.NoError(t, os.Symlink(filepath.Join(dir, tt.backendTarget), backend))
+			}
+
+			ipt := &ipt{prog: tt.program, logger: hivetest.Logger(t)}
+			ipt.initArgs(t.Context(), 5)
+
+			wantProg, wantPath := tt.program, program
+			if tt.wantBackend {
+				wantProg, wantPath = backend, backend
+			}
+			assert.Equal(t, wantProg, ipt.getProg())
+			assert.Equal(t, tt.mode, ipt.getMode())
+
+			output, err := ipt.runProgOutput([]string{"-S"})
+			require.NoError(t, err)
+			assert.Equal(t, wantPath+" -w 5 -S\n", output)
+		})
+	}
+}
+
+func TestInitArgsParsesVersion(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		script       string
+		wantMode     string
+		wantWaitArgs []string
+	}{
+		{
+			name:     "no wait support",
+			script:   "echo 'iptables v1.4.19'",
+			wantMode: "legacy",
+		},
+		{
+			name:         "wait without timeout",
+			script:       "echo 'iptables v1.4.20'",
+			wantMode:     "legacy",
+			wantWaitArgs: []string{"-w"},
+		},
+		{
+			name:         "wait with timeout",
+			script:       "echo 'iptables v1.4.22'",
+			wantMode:     "legacy",
+			wantWaitArgs: []string{"-w", "5"},
+		},
+		{
+			name:         "stderr is ignored",
+			script:       "echo '# warning v1.0 nf_tables' >&2; echo 'iptables v1.8.11 (legacy)'",
+			wantMode:     "legacy",
+			wantWaitArgs: []string{"-w", "5"},
+		},
+		{
+			name:     "no version in output",
+			script:   "echo 'unknown'",
+			wantMode: "legacy",
+		},
+		{
+			name:     "version command fails",
+			script:   "exit 1",
+			wantMode: "legacy",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("PATH", dir)
+			writeScript(t, filepath.Join(dir, "iptables"), tt.script)
+
+			ipt := &ipt{prog: "iptables", logger: hivetest.Logger(t)}
+			ipt.initArgs(t.Context(), 5)
+
+			assert.Equal(t, "iptables", ipt.getProg())
+			assert.Equal(t, tt.wantMode, ipt.getMode())
+			assert.Equal(t, tt.wantWaitArgs, ipt.waitArgs)
+		})
+	}
+}
+
+func writeScript(t *testing.T, path, body string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o700))
+}
 
 type expectation struct {
 	args string

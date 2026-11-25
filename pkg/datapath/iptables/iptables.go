@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Authors of Cilium
 
+// This file was not reviewed by a human before submission
+
 package iptables
 
 import (
@@ -12,12 +14,12 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/blang/semver/v4"
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
 	"github.com/cilium/statedb"
@@ -77,6 +79,7 @@ func formatComment(action, descr string) []string {
 var (
 	isWaitMinVersion        = versioncheck.MustCompile(">=1.4.20")
 	isWaitSecondsMinVersion = versioncheck.MustCompile(">=1.4.22")
+	iptablesVersion         = regexp.MustCompile(`v([0-9]+(\.[0-9]+)+)`)
 	noTrackPorts            = func(port uint16) []*lb.L4Addr {
 		return []*lb.L4Addr{
 			{
@@ -125,20 +128,84 @@ func (ipt *ipt) initLogger(logger *slog.Logger) {
 }
 
 func (ipt *ipt) initArgs(ctx context.Context, waitSeconds int) {
-	v, err := ipt.getVersion(ctx)
-	if err == nil {
-		switch {
-		case isWaitSecondsMinVersion(v):
-			ipt.waitArgs = []string{waitString, fmt.Sprintf("%d", waitSeconds)}
-		case isWaitMinVersion(v):
-			ipt.waitArgs = []string{waitString}
-		}
+	ipt.mode = "legacy"
+	cmd := exec.CommandContext(ctx, ipt.prog, "--version")
+	output, err := cmd.Output()
+	if err = ipt.commandError(ctx, cmd, err); err != nil {
+		ipt.logger.Debug("Unable to determine iptables version",
+			logfields.Prog, ipt.prog,
+			logfields.Error, err,
+		)
+		return
 	}
-	if mode, err := ipt.getIPtablesMode(ctx); err == nil {
-		ipt.mode = mode
-	} else {
-		ipt.mode = "legacy"
+
+	version := string(output)
+	if strings.Contains(version, "nf_tables") {
+		ipt.mode = "nft"
 	}
+	match := iptablesVersion.FindStringSubmatch(version)
+	if match == nil {
+		ipt.logger.Debug("No iptables version found in output",
+			logfields.Prog, ipt.prog,
+			logfields.Version, version,
+		)
+		return
+	}
+	v, err := versioncheck.Version(match[1])
+	if err != nil {
+		ipt.logger.Debug("Unable to parse iptables version",
+			logfields.Prog, ipt.prog,
+			logfields.Version, match[1],
+			logfields.Error, err,
+		)
+		return
+	}
+	switch {
+	case isWaitSecondsMinVersion(v):
+		ipt.waitArgs = []string{waitString, fmt.Sprintf("%d", waitSeconds)}
+	case isWaitMinVersion(v):
+		ipt.waitArgs = []string{waitString}
+	}
+
+	ipt.useBackendBinary(cmd.Path)
+}
+
+// useBackendBinary switches to the backend specific variant of the program,
+// such as iptables-nft. The Cilium image points iptables at iptables-wrapper,
+// which detects the backend and then updates that symlink. It cannot do so on a
+// read-only root filesystem, and would repeat the detection on every call.
+func (ipt *ipt) useBackendBinary(commandPath string) {
+	scopedLog := ipt.logger.With(
+		logfields.Prog, ipt.prog,
+		logfields.Mode, ipt.mode,
+	)
+
+	target, err := filepath.EvalSymlinks(commandPath)
+	if err != nil {
+		scopedLog.Debug("Unable to resolve iptables program", logfields.Error, err)
+		return
+	}
+	backend, err := exec.LookPath(commandPath + "-" + ipt.mode)
+	if err != nil {
+		scopedLog.Debug("No backend specific iptables binary found", logfields.Error, err)
+		return
+	}
+	backendTarget, err := filepath.EvalSymlinks(backend)
+	if err != nil {
+		scopedLog.Debug("Unable to resolve backend specific iptables binary", logfields.Error, err)
+		return
+	}
+
+	// Only switch if both refer to the same executable, or if the wrapper has not
+	// redirected the program yet. Never switch to another name for the wrapper.
+	isWrapper := func(path string) bool { return filepath.Base(path) == "iptables-wrapper" }
+	if isWrapper(backendTarget) || (!isWrapper(target) && target != backendTarget) {
+		scopedLog.Debug("Not switching to backend specific iptables binary", logfields.Path, backend)
+		return
+	}
+
+	scopedLog.Debug("Using backend specific iptables binary", logfields.Path, backend)
+	ipt.prog = backend
 }
 
 func (ipt *ipt) getProg() string {
@@ -151,32 +218,6 @@ func (ipt *ipt) getIpset() string {
 
 func (ipt *ipt) getMode() string {
 	return ipt.mode
-}
-
-func (ipt *ipt) getVersion(ctx context.Context) (semver.Version, error) {
-	cmd := exec.CommandContext(ctx, ipt.prog, "--version")
-	b, err := cmd.CombinedOutput()
-	if err = ipt.commandError(ctx, cmd, err); err != nil {
-		return semver.Version{}, err
-	}
-	v := regexp.MustCompile(`v([0-9]+(\.[0-9]+)+)`)
-	vString := v.FindStringSubmatch(string(b))
-	if vString == nil {
-		return semver.Version{}, fmt.Errorf("no iptables version found in string: %s", string(b))
-	}
-	return versioncheck.Version(vString[1])
-}
-
-func (ipt *ipt) getIPtablesMode(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, ipt.prog, "--version")
-	b, err := cmd.CombinedOutput()
-	if err = ipt.commandError(ctx, cmd, err); err != nil {
-		return "", err
-	}
-	if strings.Contains(string(b), "nf_tables") {
-		return "nft", nil
-	}
-	return "legacy", nil
 }
 
 func (ipt *ipt) runProgOutput(args []string) (string, error) {
@@ -487,10 +528,11 @@ func newManager(p params) Manager {
 			ip4tables.initLogger(p.Logger)
 			ip6tables.initLogger(p.Logger)
 
-			ip4tables.initArgs(ctx, int(p.Cfg.IPTablesLockTimeout/time.Second))
-			if p.SharedCfg.EnableIPv6 {
-				ip6tables.initArgs(ctx, int(p.Cfg.IPTablesLockTimeout/time.Second))
-			}
+			// Start() runs ip6tables even when IPv6 is disabled, so always
+			// initialize both.
+			waitSeconds := int(p.Cfg.IPTablesLockTimeout / time.Second)
+			ip4tables.initArgs(ctx, waitSeconds)
+			ip6tables.initArgs(ctx, waitSeconds)
 			return nil
 		},
 	})
